@@ -495,7 +495,7 @@ const TranscriptGenerator = () => {
       const blob = await Packer.toBlob(doc);
       saveAs(blob, "Generated_Transcript_Updated.docx");
       alert(
-        "Transcript generated successfully with the table right after paragraphs!"
+        "And the boyfriend of the year award goes to.....! Your transcript was successfully downloaded."
       );
     } catch (error) {
       console.error("Error generating transcript:", error);
