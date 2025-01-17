@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import ExcelJS from "exceljs";
+import * as XLSX from "xlsx"; // <-- For .xls -> .xlsx conversion in memory
 import { saveAs } from "file-saver";
 import {
   Document,
@@ -10,7 +11,6 @@ import {
   TableCell,
   WidthType,
   BorderStyle,
-  HeadingLevel,
   AlignmentType,
   PageOrientation,
   TextRun,
@@ -60,10 +60,8 @@ function allBorders() {
 
 /**
  * Creates multiple Paragraphs in one table cell—one paragraph per item in 'lines'.
- * Applies a custom style (TableData) to each paragraph so we can have a special font size.
  */
 function multiLineCell(lines) {
-  // 'lines' is an array of strings; each item gets its own paragraph in the cell
   const paragraphs = lines.map((text) => {
     return new Paragraph({
       style: "TableData", // Use the custom style for table data
@@ -78,7 +76,7 @@ function multiLineCell(lines) {
 }
 
 /**
- * Determines the academic year: "Aug-18 Sem I" => year=18; "Jan-18 Sem II" => year=17.
+ * Determines the academic year from a session label, e.g. "Aug-18 Sem I" => year=18; "Jan-18 Sem II" => year=17.
  */
 function getAcademicYear(sessionLabel) {
   const semIRegex = /(Aug|Sep|Oct|Nov|Dec)-(\d{2,4})\s+Sem\s*I/i;
@@ -91,7 +89,7 @@ function getAcademicYear(sessionLabel) {
 
   match = semIIRegex.exec(sessionLabel);
   if (match) {
-    // Jan => belongs to previous year
+    // For "Jan-18 Sem II", the academic year is previous year: 17
     const adjustedYear = String(parseInt(match[2], 10) - 1);
     return { year: adjustedYear, matched: "SemII" };
   }
@@ -120,14 +118,38 @@ const TranscriptGenerator = () => {
     }
 
     try {
-      // 1) Load the Excel file
-      const workbook = new ExcelJS.Workbook();
+      // 1) Read the file as ArrayBuffer
       const arrayBuffer = await selectedFile.arrayBuffer();
-      await workbook.xlsx.load(arrayBuffer);
 
+      // 2) If it's .xls, convert to .xlsx in memory using SheetJS
+      const fileName = selectedFile.name.toLowerCase();
+      let finalArrayBuffer = arrayBuffer; // Assume it's already .xlsx
+
+      if (fileName.endsWith(".xls")) {
+        // Convert .xls -> .xlsx
+        const data = new Uint8Array(arrayBuffer);
+        const sheetJSWorkbook = XLSX.read(data, { type: "array" });
+
+        // Write it out as .xlsx array buffer
+        const xlsxData = XLSX.write(sheetJSWorkbook, {
+          bookType: "xlsx",
+          type: "array",
+        });
+        finalArrayBuffer = xlsxData;
+      }
+
+      // 3) Parse .xlsx data with ExcelJS
+      const workbook = new ExcelJS.Workbook();
+      await workbook.xlsx.load(finalArrayBuffer);
+
+      // 4) Get first worksheet
       const worksheet = workbook.worksheets[0];
+      if (!worksheet) {
+        throw new Error("No worksheet found at index 0");
+      }
 
-      // 2) Extract rows from Excel
+      // 5) Extract rows (like your original code)
+      //    We'll read from row 3 onward (if your data starts there):
       const rowsData = [];
       worksheet.eachRow((row, rowNumber) => {
         if (rowNumber >= 3) {
@@ -141,7 +163,7 @@ const TranscriptGenerator = () => {
         }
       });
 
-      // 3) Format each row
+      // 6) Format each row
       const processed = rowsData.map((item) => {
         const formattedSem = formatSession(item.sem);
         const [catNo, courseName] = splitCatNoAndCourse(item.catAndCourse);
@@ -155,7 +177,7 @@ const TranscriptGenerator = () => {
         };
       });
 
-      // 4) Group rows by session-block until a blank line
+      // 7) Group rows by session until a blank line
       const groupedData = {};
       let currentSessionKey = null;
 
@@ -166,7 +188,6 @@ const TranscriptGenerator = () => {
         const hrsVal = String(row.SemHrs || "").trim();
 
         const isTrulyBlankRow = !rawVal && !courseVal && !gradeVal && !hrsVal;
-
         if (isTrulyBlankRow) {
           currentSessionKey = null;
           return;
@@ -183,7 +204,7 @@ const TranscriptGenerator = () => {
           groupedData[currentSessionKey] = [];
         }
 
-        // Skip lines that start with known "bottom" text
+        // Skip lines that start with "bottom" text
         const courseLower = row.Course.toLowerCase().trim();
         if (
           !courseLower.startsWith("total number of semester hours earned") &&
@@ -201,7 +222,7 @@ const TranscriptGenerator = () => {
         }
       });
 
-      // 5) Build academicYears
+      // 8) Build academic years
       const academicYears = {};
       Object.entries(groupedData).forEach(([sessionLabel, courses]) => {
         const { year } = getAcademicYear(sessionLabel);
@@ -209,7 +230,7 @@ const TranscriptGenerator = () => {
         academicYears[year][sessionLabel] = courses;
       });
 
-      // 6) Create doc
+      // 9) Create the docx
       const doc = new Document({
         creator: "Transcript Generator",
         description: "Generated transcript",
@@ -217,21 +238,10 @@ const TranscriptGenerator = () => {
         orientation: PageOrientation.PORTRAIT,
         sections: [
           {
-            // Here is where "size" and "margins" typically go
             size: {
-              // width: 12240, // 8.5 inches in Twips
-              // height: 15840, // 11 inches in Twips
               orientation: PageOrientation.PORTRAIT,
             },
-            // margins: {
-            //   top: 1440, // 1 inch
-            //   bottom: 1440, // 1 inch
-            //   left: 1800, // 1.25 inches
-            //   right: 1800, // 1.25 inches
-            // },
-            children: [
-              // paragraphs, tables, etc.
-            ],
+            children: [],
           },
         ],
         styles: {
@@ -239,19 +249,19 @@ const TranscriptGenerator = () => {
             heading1: {
               run: {
                 font: "Arial",
-                size: 16, // 10pt
+                size: 16,
               },
             },
             heading2: {
               run: {
                 font: "Arial",
-                size: 16, // 10pt
+                size: 16,
               },
             },
             paragraph: {
               run: {
                 font: "Arial",
-                size: 16, // 10pt
+                size: 16,
               },
               spacing: {
                 after: 100,
@@ -260,13 +270,13 @@ const TranscriptGenerator = () => {
             document: {
               run: {
                 font: "Arial",
-                size: 16, // 10pt
+                size: 16,
               },
             },
             section: {
               run: {
                 font: "Arial",
-                size: 16, // 10pt
+                size: 16,
               },
             },
           },
@@ -277,29 +287,26 @@ const TranscriptGenerator = () => {
               basedOn: "Normal",
               run: {
                 font: "Arial",
-                size: 16, // 12pt
+                size: 16,
               },
             },
           ],
         },
       });
 
-      // Build paragraphs for the top part
+      // Top paragraphs
       const firstGroup = [
         new Paragraph({
           text: "AFRICAN BIBLE COLLEGE",
           alignment: AlignmentType.CENTER,
-          size: 24,
         }),
         new Paragraph({
           text: "P.O. BOX 1028, LILONGWE, MALAWI",
           alignment: AlignmentType.CENTER,
-          size: 24,
         }),
         new Paragraph({
           text: "PHONE (265) 761-646 Email: registrar@abcmalawi.org",
           alignment: AlignmentType.CENTER,
-          size: 24,
         }),
         new Paragraph(""), // blank line
       ];
@@ -308,44 +315,36 @@ const TranscriptGenerator = () => {
         new Paragraph({
           text: "OFFICE OF THE REGISTRAR",
           alignment: AlignmentType.LEFT,
-          size: 24,
         }),
         new Paragraph({
           text: "OFFICIAL TRANSCRIPT OF THE RECORD OF:",
           alignment: AlignmentType.LEFT,
-          size: 24,
         }),
         new Paragraph({
           text: " [last name], [first name] STUDENT #[student number]",
           alignment: AlignmentType.LEFT,
-          size: 24,
         }),
         new Paragraph({
           text: "BIRTHDATE: [mm-dd-yy]",
           alignment: AlignmentType.LEFT,
-          size: 24,
         }),
         new Paragraph({
           text: "ATTENDANCE FROM: August 20[XX] TO: June 20[XX]",
           alignment: AlignmentType.LEFT,
-          size: 24,
         }),
         new Paragraph({
           text: "PRESENT STATUS: GRADUATED [start year] WITH A BACHELORS OF [end year]",
           alignment: AlignmentType.LEFT,
-          size: 24,
         }),
         new Paragraph({
           text: "CREDITS EARNED AT AFRICAN BIBLE COLLEGE",
           alignment: AlignmentType.LEFT,
-          size: 24,
         }),
       ];
 
-      // Combine paragraphs + table in one section
       const childrenArray = [...firstGroup, ...secondGroup];
 
-      // 7) Build the table rows
+      // Build table rows
       const rows = [];
 
       // Table header
@@ -366,6 +365,7 @@ const TranscriptGenerator = () => {
         })
       );
 
+      // Sort academic years
       const allYearKeys = Object.keys(academicYears).filter(
         (y) => y !== "Unknown"
       );
@@ -375,11 +375,13 @@ const TranscriptGenerator = () => {
       numericYears.sort((a, b) => a - b);
       const sortedYears = numericYears.map(String);
 
+      // leftover year keys
       const leftoverYearKeys = allYearKeys.filter((y) =>
         isNaN(parseInt(y, 10))
       );
       leftoverYearKeys.forEach((y) => sortedYears.push(y));
 
+      // For each year, pair Sem I vs Sem II
       for (const yearStr of sortedYears) {
         const sessionsObj = academicYears[yearStr];
         const sessionLabels = Object.keys(sessionsObj);
@@ -424,7 +426,7 @@ const TranscriptGenerator = () => {
             })
           );
 
-          // blank row after pairing
+          // Blank row after each pair
           rows.push(
             new TableRow({
               children: Array.from({ length: 10 }, () => multiLineCell([""])),
@@ -433,31 +435,18 @@ const TranscriptGenerator = () => {
         }
       }
 
-      // Build the table
       const transcriptTable = new Table({
         rows,
         width: {
           size: 100,
           type: WidthType.PERCENTAGE,
         },
-        columnWidths: [
-          835, // SESSION (Left)
-          2059, // COURSE (Left)
-          533, // CAT. NO. (Left)
-          547, // GRADE (Left)
-          562, // SEM. HRS. (Left)
-          835, // SESSION (Right)
-          2059, // COURSE (Right)
-          533, // CAT. NO. (Right)
-          547, // GRADE (Right)
-          562, // SEM. HRS. (Right)
-        ],
+        columnWidths: [835, 2059, 533, 547, 562, 835, 2059, 533, 547, 562],
       });
 
-      // Insert the table right after secondGroup
       childrenArray.push(transcriptTable);
 
-      // Then we add the final paragraphs right after the table
+      // Final paragraphs
       childrenArray.push(new Paragraph(""));
       childrenArray.push(
         new Paragraph("Total Number of Semester Hours Earned: ")
@@ -469,7 +458,7 @@ const TranscriptGenerator = () => {
       childrenArray.push(new Paragraph(""));
       childrenArray.push(
         new Paragraph(
-          "The year consists of two semesters of approximately 16 weeks each.  Length of School Hour: Each lecture hour consists of not less than 50 minutes.  Grading System: A [100-96]; A- [95-93]; B+ [92-90]; B [89-87]; B- [86-84]; C+ [83-81]; C [80-78]; C- [77-75]; D+ [74-73]; D [72-71]; D- [70-66]; F [65- Below]; I [Incomplete}; W [Withdrew]."
+          "The year consists of two semesters of approximately 16 weeks each. Length of School Hour: Each lecture hour consists of not less than 50 minutes. Grading System: A [100-96]; A- [95-93]; B+ [92-90]; B [89-87]; B- [86-84]; C+ [83-81]; C [80-78]; C- [77-75]; D+ [74-73]; D [72-71]; D- [70-66]; F [65- Below]; I [Incomplete]; W [Withdrew]."
         )
       );
       childrenArray.push(new Paragraph(""));
@@ -486,30 +475,65 @@ const TranscriptGenerator = () => {
         new Paragraph(`This transcript was issued on:  ${new Date()}.`)
       );
 
-      // Finally, add everything in one single section
+      // Add everything to the doc
       doc.addSection({
         children: childrenArray,
       });
 
-      // 8) Generate & download
+      // 10) Generate & download
       const blob = await Packer.toBlob(doc);
-      saveAs(blob, "Generated_Transcript_Updated.docx");
+      saveAs(blob, "Generated_Transcript.docx");
       alert(
-        "And the boyfriend of the year award goes to.....! Your transcript was successfully downloaded."
+        "Transcript successfully downloaded! And the boyfriend of the year award goes to...."
       );
     } catch (error) {
       console.error("Error generating transcript:", error);
-      alert(
-        "Error generating transcript. Please ensure the Excel document has headers in the following format: 'Sem. Cat.No. And Course Name	Grade	Sem.Hrs	GPA'."
-      );
+      alert(`Error generating transcript: ${error.message}`);
     }
   };
 
   return (
-    <div style={{ margin: "20px" }}>
-      <h3>Transcript Generator</h3>
-      <input type="file" accept=".xls,.xlsx" onChange={handleFileChange} />
-      <button onClick={handleGenerateTranscript} style={{ marginLeft: "10px" }}>
+    <div
+      style={{
+        backgroundColor: "#f4f4f4",
+        padding: "20px",
+        borderRadius: "10px",
+        boxShadow: "0px 4px 10px rgba(0, 0, 0, 0.1)",
+        maxWidth: "600px",
+        margin: "20px auto",
+      }}
+    >
+      <h3 style={{ textAlign: "center", color: "#333" }}>
+        Transcript Generator
+      </h3>
+      <p style={{ textAlign: "center", color: "#555" }}>
+        Upload an Excel file (.xlsx) to generate a transcript.
+      </p>
+      <input
+        type="file"
+        accept=".xls,.xlsx"
+        onChange={handleFileChange}
+        style={{
+          display: "block",
+          margin: "10px auto",
+          padding: "10px",
+          borderRadius: "5px",
+          border: "1px solid #ccc",
+        }}
+      />
+      <button
+        onClick={handleGenerateTranscript}
+        style={{
+          display: "block",
+          margin: "10px auto",
+          padding: "10px 20px",
+          backgroundColor: "#007BFF",
+          color: "#fff",
+          border: "none",
+          borderRadius: "5px",
+          cursor: "pointer",
+        }}
+      >
         Generate Transcript
       </button>
     </div>
